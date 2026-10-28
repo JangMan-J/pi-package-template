@@ -59,6 +59,10 @@ jobs:
           fi
       - if: steps.registry.outputs.published == 'false'
         run: npm publish
+        env:
+          # npm explains a failed trusted-publishing (OIDC) exchange only at verbose level;
+          # without it a failure shows up as a bare E404 on the upload.
+          NPM_CONFIG_LOGLEVEL: verbose
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
