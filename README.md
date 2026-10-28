@@ -33,8 +33,12 @@ and loads it in Pi.
    ```
 
    The script creates the package on npm without publishing anything real, links the
-   trusted publisher, and has CI publish the first version. You only enter 2FA codes. See
-   the comment at the top of `scripts/npm-bootstrap.sh` for why it works this way.
+   trusted publisher (your one 2FA approval), and has CI publish the first version. On a
+   machine without a display, open the printed authentication link on another device.
+   Two harmless leftovers stay behind: a staged throwaway only maintainers see, and a
+   `0.0.0-stage` prerelease nobody installs by default.
+   `npm run bootstrap:npm -- --cleanup` removes them any time, for two more approvals.
+   See the comment at the top of `scripts/npm-bootstrap.sh` for why it works this way.
 
 ## Release
 
