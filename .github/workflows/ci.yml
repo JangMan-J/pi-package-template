@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Node ${{ matrix.node }} / Pi ${{ matrix.pi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep the first entry equal to the engines floor in package.json.
+        # Pi "locked" is the version in package-lock.json; "floor" is the lowest version
+        # the @earendil-works/pi-coding-agent peer range allows.
+        node: ["22.19.0", "24", "26"]
+        pi: [locked]
+        include:
+          - node: "24"
+            pi: floor
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Use the lowest supported Pi
+        if: matrix.pi == 'floor'
+        run: |
+          floor="$(node -p 'require("./package.json").peerDependencies["@earendil-works/pi-coding-agent"].replace(/^>=\s*/, "")')"
+          echo "Pi floor: ${floor}"
+          npm install --no-save "@earendil-works/pi-ai@${floor}" "@earendil-works/pi-coding-agent@${floor}"
+      - run: npm run typecheck
+      - run: npm test
+      - name: Check the package contents
+        run: npm pack --dry-run
+      - name: Install the packed tarball and load it in Pi
+        run: npm run smoke:pack
