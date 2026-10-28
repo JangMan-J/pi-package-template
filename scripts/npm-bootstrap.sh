@@ -18,10 +18,11 @@
 #   1. `npm stage publish` a throwaway 0.0.0-bootstrap. This creates the package (npm adds a
 #      public 0.0.0-stage placeholder) without publishing anything real.  (no 2FA)
 #   2. `npm trust github` links .github/workflows/publish.yml to the package.  (2FA)
-#   3. Reject the staged 0.0.0-bootstrap.  (2FA)
-#   4. Tag v<version> and push: CI publishes the real first version via OIDC with provenance,
+#   3. Tag v<version> and push: CI publishes the real first version via OIDC with provenance,
 #      which validates the link.
-#   5. Unpublish the 0.0.0-stage placeholder.  (2FA)
+#   4. Reject the staged 0.0.0-bootstrap.  (2FA) Only after step 3: while the throwaway is the
+#      package's only version, rejecting it unpublishes the package and its trust link.
+#   5. Unpublish the 0.0.0-stage placeholder if it is still there.  (2FA)
 #
 # Steps 1, 3, 4, and 5 check whether they are already done. Step 2 cannot (listing trust links
 # needs 2FA too), so resume past it with --from 3 instead of creating a duplicate link.
@@ -115,7 +116,9 @@ ci=$(gh run list --workflow ci.yml --branch "$branch" --commit "$(git rev-parse 
 
 package_exists=0
 published "$name" && package_exists=1
-if published "$name@$version"; then die "$name@$version is already on npm: this script is for a package's first release"; fi
+if [ "$FROM" -le 3 ] && published "$name@$version"; then
+  die "$name@$version is already on npm: this script is for a package's first release (resume later steps with --from 4)"
+fi
 
 note "npm user:     $npm_user"
 note "package:      $name@$version"
@@ -171,8 +174,35 @@ else
   fi
 fi
 
-# ------------------------------------------------------ 3. reject the staged throwaway
-if step 3 "Reject the staged $BOOT_VERSION (npm asks for 2FA)"; then
+# ---------------------------------------------------- 3. first release from CI
+if ! step 3 "Tag v$version and let CI publish it through trusted publishing"; then
+  :
+elif [ "$tag_exists" = 1 ]; then
+  note "tag v$version is already on origin; watching its publish run"
+else
+  act git tag -a "v$version" -m "$name $version"
+  act git push origin "v$version"
+fi
+if [ "$STEP" = 3 ] && [ "$FROM" -le 3 ] && [ "$DRY_RUN" = 0 ]; then
+  run_id=""
+  for _ in $(seq 1 30); do
+    run_id=$(gh run list --workflow "$WORKFLOW" --branch "v$version" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+    [ -n "$run_id" ] && break
+    sleep 5
+  done
+  [ -n "$run_id" ] || die "no $WORKFLOW run started for v$version"
+  gh run watch "$run_id" --exit-status >/dev/null || die "the publish run failed: gh run view $run_id --log-failed"
+  note "publish run $run_id succeeded; waiting for npm to finish processing $name@$version"
+  wait_for "$name@$version" 60 || die "$name@$version is not visible on the registry after 10 minutes"
+fi
+
+# ------------------------------------------------------ 4. reject the staged throwaway
+# Only now: while the throwaway is the package's only version, rejecting it unpublishes the
+# whole package and its trust link, and npm then blocks the name for 24 hours.
+if step 4 "Reject the staged $BOOT_VERSION (npm asks for 2FA)"; then
+if [ "$DRY_RUN" = 0 ] && ! published "$name@$version"; then
+  die "$name@$version is not on npm yet; rejecting the throwaway now would delete the package"
+fi
 stage_id=$(cat "$stage_id_file" 2>/dev/null || true)
 [ -n "$stage_id" ] || stage_id=$(NAME="$name" BOOT="$BOOT_VERSION" node -e '
   let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
@@ -192,28 +222,6 @@ elif [ "$DRY_RUN" = 1 ] && [ "$package_exists" = 0 ]; then
 else
   note "no staged $BOOT_VERSION found; skipping"
 fi
-fi
-
-# ---------------------------------------------------- 4. first release from CI
-if ! step 4 "Tag v$version and let CI publish it through trusted publishing"; then
-  :
-elif [ "$tag_exists" = 1 ]; then
-  note "tag v$version is already on origin; watching its publish run"
-else
-  act git tag -a "v$version" -m "$name $version"
-  act git push origin "v$version"
-fi
-if [ "$STEP" = 4 ] && [ "$FROM" -le 4 ] && [ "$DRY_RUN" = 0 ]; then
-  run_id=""
-  for _ in $(seq 1 30); do
-    run_id=$(gh run list --workflow "$WORKFLOW" --branch "v$version" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
-    [ -n "$run_id" ] && break
-    sleep 5
-  done
-  [ -n "$run_id" ] || die "no $WORKFLOW run started for v$version"
-  gh run watch "$run_id" --exit-status >/dev/null || die "the publish run failed: gh run view $run_id --log-failed"
-  note "publish run $run_id succeeded; waiting for npm to finish processing $name@$version"
-  wait_for "$name@$version" 60 || die "$name@$version is not visible on the registry after 10 minutes"
 fi
 
 # ------------------------------------------------------- 5. remove the placeholder
