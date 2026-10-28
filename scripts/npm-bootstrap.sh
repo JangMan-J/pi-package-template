@@ -3,7 +3,8 @@
 # release comes from CI through trusted publishing (OIDC) with provenance, and every later
 # release is a tag push with no human step.
 #
-#   npm run bootstrap:npm              # run it; npm asks for 2FA codes along the way
+#   npm run bootstrap:npm              # steps 1-3; one 2FA approval
+#   npm run bootstrap:npm -- --cleanup # later, any time: steps 4-5; two 2FA approvals
 #   npm run bootstrap:npm -- --dry-run # check everything and print the plan; changes nothing
 #   npm run bootstrap:npm -- --from 3  # resume at a step after an interruption
 #
@@ -24,21 +25,29 @@
 #      package's only version, rejecting it unpublishes the package and its trust link.
 #   5. Unpublish the 0.0.0-stage placeholder if it is still there.  (2FA)
 #
+# Steps 4 and 5 are cleanup and run only with --cleanup. Skipping them is harmless: the staged
+# throwaway is visible only to maintainers, and npm never resolves the 0.0.0-stage prerelease
+# for `latest` or a normal range.
+#
 # Steps 1, 3, 4, and 5 check whether they are already done. Step 2 cannot (listing trust links
 # needs 2FA too), so resume past it with --from 3 instead of creating a duplicate link.
 set -euo pipefail
 
 DRY_RUN=0
 FROM=1
+CLEANUP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --from) FROM=${2:-}; shift ;;
-    *) printf 'usage: %s [--dry-run] [--from <1-5>]\n' "$0" >&2; exit 2 ;;
+    --cleanup) CLEANUP=1; FROM=4 ;;
+    *) printf 'usage: %s [--dry-run] [--cleanup] [--from <1-5>]\n' "$0" >&2; exit 2 ;;
   esac
   shift
 done
 [[ "$FROM" =~ ^[1-5]$ ]] || { echo "--from takes a step number from 1 to 5" >&2; exit 2; }
+# Resuming inside the cleanup steps means running them.
+[ "$FROM" -ge 4 ] && CLEANUP=1
 WORKFLOW=publish.yml
 BOOT_VERSION=0.0.0-bootstrap
 PLACEHOLDER=0.0.0-stage
@@ -202,7 +211,9 @@ fi
 # ------------------------------------------------------ 4. reject the staged throwaway
 # Only now: while the throwaway is the package's only version, rejecting it unpublishes the
 # whole package and its trust link, and npm then blocks the name for 24 hours.
-if step 4 "Reject the staged $BOOT_VERSION (npm asks for 2FA)"; then
+if [ "$CLEANUP" = 0 ]; then
+  say "4-5/5 Cleanup skipped; run npm run bootstrap:npm -- --cleanup any time (two 2FA approvals)"
+elif step 4 "Reject the staged $BOOT_VERSION (npm asks for 2FA)"; then
 if [ "$DRY_RUN" = 0 ] && ! published "$name@$version"; then
   die "$name@$version is not on npm yet; rejecting the throwaway now would delete the package"
 fi
@@ -228,7 +239,9 @@ fi
 fi
 
 # ------------------------------------------------------- 5. remove the placeholder
-if ! step 5 "Remove the $PLACEHOLDER placeholder (npm asks for 2FA)"; then
+if [ "$CLEANUP" = 0 ]; then
+  :
+elif ! step 5 "Remove the $PLACEHOLDER placeholder (npm asks for 2FA)"; then
   :
 elif [ "$DRY_RUN" = 1 ] || published "$name@$PLACEHOLDER"; then
   act npm unpublish "$name@$PLACEHOLDER"
