@@ -5,6 +5,10 @@
 #
 #   npm run bootstrap:npm              # run it; npm asks for 2FA codes along the way
 #   npm run bootstrap:npm -- --dry-run # check everything and print the plan; changes nothing
+#   npm run bootstrap:npm -- --from 3  # resume at a step after an interruption
+#
+# For each 2FA step npm prints an authentication URL and waits. On a machine without a display
+# (SSH, a headless box) open that URL on any device; npm notices the approval by itself.
 #
 # Why the detour: npm attaches a trusted publisher only to a package that exists, and a
 # trusted-publisher link is validated only by a publish through it. Publishing the real first
@@ -19,11 +23,21 @@
 #      which validates the link.
 #   5. Unpublish the 0.0.0-stage placeholder.  (2FA)
 #
-# Rerunnable: each step checks whether it is already done.
+# Steps 1, 3, 4, and 5 check whether they are already done. Step 2 cannot (listing trust links
+# needs 2FA too), so resume past it with --from 3 instead of creating a duplicate link.
 set -euo pipefail
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+FROM=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1 ;;
+    --from) FROM=${2:-}; shift ;;
+    *) printf 'usage: %s [--dry-run] [--from <1-5>]\n' "$0" >&2; exit 2 ;;
+  esac
+  shift
+done
+[[ "$FROM" =~ ^[1-5]$ ]] || { echo "--from takes a step number from 1 to 5" >&2; exit 2; }
 WORKFLOW=publish.yml
 BOOT_VERSION=0.0.0-bootstrap
 PLACEHOLDER=0.0.0-stage
@@ -31,6 +45,23 @@ PLACEHOLDER=0.0.0-stage
 cd "$(dirname "$0")/.."
 
 say() { printf '\n==> %s\n' "$*"; }
+# Enter step $1 (titled $2), or skip it when resuming past it.
+STEP=0
+step() {
+  STEP=$1
+  if [ "$1" -lt "$FROM" ]; then say "$1/5 $2: skipped (--from $FROM)"; return 1; fi
+  say "$1/5 $2"
+}
+# On any stop after preflight, say exactly how to resume.
+on_exit() {
+  local status=$?
+  rm -rf "${scratch:-}" "${stage_log:-}"
+  if [ "$status" -ne 0 ] && [ "$STEP" -gt 0 ] && [ "$DRY_RUN" = 0 ]; then
+    printf '\nStopped in step %s. Resume with: npm run bootstrap:npm -- --from %s\n' "$STEP" "$STEP" >&2
+  fi
+}
+trap on_exit EXIT
+trap 'exit 130' INT
 note() { printf '    %s\n' "$*"; }
 die() { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 # Run a command, or only print it in dry-run mode.
@@ -53,6 +84,13 @@ node -e 'const [a, b] = process.argv[1].split(".").map(Number); process.exit(a >
   || die "npm $npm_version is too old: staged publishing of a new package needs npm 11.15.0 or later"
 npm_user=$(npm whoami 2>/dev/null) || die "not logged in to npm: run npm login"
 [ "$DRY_RUN" = 1 ] || [ -t 0 ] || die "run this in an interactive terminal: npm asks for 2FA codes"
+# Without a display, "Press ENTER to open in the browser" can never succeed. With browser=false
+# npm only prints the authentication URL and waits for it to be approved from another device.
+headless=0
+if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && [ "$(uname)" != Darwin ]; then
+  headless=1
+  export npm_config_browser=false
+fi
 
 name=$(node -p 'require("./package.json").name')
 version=$(node -p 'require("./package.json").version')
@@ -84,13 +122,15 @@ note "package:      $name@$version"
 note "repository:   $repo ($branch)"
 note "workflow:     .github/workflows/$WORKFLOW${environment:+ (environment: $environment)}"
 note "package on npm already: $([ $package_exists = 1 ] && echo yes || echo no)"
+[ "$headless" = 1 ] && note "no display: open each npm authentication URL on another device, then wait here"
+stage_id_file="$(git rev-parse --git-dir)/npm-bootstrap-stage-id"
 
 # ------------------------------------------------- 1. create the package (staged)
-say "1/5 Create the package on npm with a staged, throwaway $BOOT_VERSION"
 stage_log=$(mktemp)
 scratch=$(mktemp -d)
-trap 'rm -rf "$scratch" "$stage_log"' EXIT
-if [ "$package_exists" = 1 ]; then
+if ! step 1 "Create the package on npm with a staged, throwaway $BOOT_VERSION"; then
+  :
+elif [ "$package_exists" = 1 ]; then
   note "already exists; skipping"
 else
   NAME="$name" VERSION="$BOOT_VERSION" REPO_URL="$repo_url" node -e '
@@ -110,28 +150,31 @@ else
     fi
   else
     (cd "$scratch" && npm stage publish --tag bootstrap --access public 2>&1) | tee "$stage_log"
+    # Kept for step 3, so a resumed run still knows what to reject.
+    grep -oE 'staged with id [0-9a-f-]+' "$stage_log" | awk '{print $4}' | head -1 > "$stage_id_file" || true
     note "waiting for $name to appear on the registry"
     wait_for "$name" 30 || die "$name did not appear on the registry; check npm stage list $name"
   fi
 fi
 
 # --------------------------------------------------------- 2. trusted publisher
-say "2/5 Link the trusted publisher (npm asks for 2FA)"
 trust_args=(github "$name" --file "$WORKFLOW" --repo "$repo" --allow-publish --yes)
 [ -n "$environment" ] && trust_args+=(--env "$environment")
-if [ "$DRY_RUN" = 1 ]; then
+if ! step 2 "Link the trusted publisher (npm asks for 2FA)"; then
+  :
+elif [ "$DRY_RUN" = 1 ]; then
   note "[dry-run] npm trust ${trust_args[*]}"
 else
   # Listing links needs 2FA too, so try to create it and let a rerun confirm an existing link.
   if ! npm trust "${trust_args[@]}"; then
-    read -r -p "    npm trust failed. Continue only if this link already exists from an earlier run [y/N] " answer
-    [[ "$answer" =~ ^[Yy]$ ]] || die "stopped; fix the trusted publisher and rerun (finished steps are skipped)"
+    die "npm trust failed. If the link was in fact created, resume with --from 3 to avoid a duplicate"
   fi
 fi
 
 # ------------------------------------------------------ 3. reject the staged throwaway
-say "3/5 Reject the staged $BOOT_VERSION (npm asks for 2FA)"
-stage_id=$(NAME="$name" BOOT="$BOOT_VERSION" node -e '
+if step 3 "Reject the staged $BOOT_VERSION (npm asks for 2FA)"; then
+stage_id=$(cat "$stage_id_file" 2>/dev/null || true)
+[ -n "$stage_id" ] || stage_id=$(NAME="$name" BOOT="$BOOT_VERSION" node -e '
   let input = ""; process.stdin.on("data", d => input += d).on("end", () => {
     try {
       const list = JSON.parse(input);
@@ -139,25 +182,28 @@ stage_id=$(NAME="$name" BOOT="$BOOT_VERSION" node -e '
       const hit = items.find(item => item && item.version === process.env.BOOT);
       if (hit) console.log(hit.id ?? hit.stage_id ?? hit.stageId ?? "");
     } catch {}
-  });' < <(npm stage list "$name" --json 2>/dev/null || echo '[]'))
+  });' < <(timeout 60 npm stage list "$name" --json </dev/null 2>/dev/null || echo '[]'))
 [ -n "$stage_id" ] || stage_id=$(grep -oE 'staged with id [0-9a-f-]+' "$stage_log" | awk '{print $4}' | head -1 || true)
 if [ -n "$stage_id" ]; then
   act npm stage reject "$stage_id"
+  [ "$DRY_RUN" = 1 ] || rm -f "$stage_id_file"
 elif [ "$DRY_RUN" = 1 ] && [ "$package_exists" = 0 ]; then
   note "[dry-run] npm stage reject <id of the $BOOT_VERSION staged in step 1>"
 else
   note "no staged $BOOT_VERSION found; skipping"
 fi
+fi
 
 # ---------------------------------------------------- 4. first release from CI
-say "4/5 Tag v$version and let CI publish it through trusted publishing"
-if [ "$tag_exists" = 1 ]; then
+if ! step 4 "Tag v$version and let CI publish it through trusted publishing"; then
+  :
+elif [ "$tag_exists" = 1 ]; then
   note "tag v$version is already on origin; watching its publish run"
 else
   act git tag -a "v$version" -m "$name $version"
   act git push origin "v$version"
 fi
-if [ "$DRY_RUN" = 0 ]; then
+if [ "$STEP" = 4 ] && [ "$FROM" -le 4 ] && [ "$DRY_RUN" = 0 ]; then
   run_id=""
   for _ in $(seq 1 30); do
     run_id=$(gh run list --workflow "$WORKFLOW" --branch "v$version" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
@@ -171,14 +217,16 @@ if [ "$DRY_RUN" = 0 ]; then
 fi
 
 # ------------------------------------------------------- 5. remove the placeholder
-say "5/5 Remove the $PLACEHOLDER placeholder (npm asks for 2FA)"
-if [ "$DRY_RUN" = 1 ] || published "$name@$PLACEHOLDER"; then
+if ! step 5 "Remove the $PLACEHOLDER placeholder (npm asks for 2FA)"; then
+  :
+elif [ "$DRY_RUN" = 1 ] || published "$name@$PLACEHOLDER"; then
   act npm unpublish "$name@$PLACEHOLDER"
 else
   note "no placeholder; skipping"
 fi
 
 # ------------------------------------------------------------------ result
+STEP=0
 if [ "$DRY_RUN" = 1 ]; then
   say "Dry run complete. Nothing was changed."
   exit 0
