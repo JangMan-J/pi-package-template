@@ -143,6 +143,8 @@ stage_id=$(NAME="$name" BOOT="$BOOT_VERSION" node -e '
 [ -n "$stage_id" ] || stage_id=$(grep -oE 'staged with id [0-9a-f-]+' "$stage_log" | awk '{print $4}' | head -1 || true)
 if [ -n "$stage_id" ]; then
   act npm stage reject "$stage_id"
+elif [ "$DRY_RUN" = 1 ] && [ "$package_exists" = 0 ]; then
+  note "[dry-run] npm stage reject <id of the $BOOT_VERSION staged in step 1>"
 else
   note "no staged $BOOT_VERSION found; skipping"
 fi
