@@ -184,9 +184,12 @@ else
   act git push origin "v$version"
 fi
 if [ "$STEP" = 3 ] && [ "$FROM" -le 3 ] && [ "$DRY_RUN" = 0 ]; then
+  # Match the run by the tagged commit: the newest run for the tag name can be an older run
+  # of an earlier tag with the same name, listed before GitHub registers the new one.
+  tag_sha=$(git rev-parse "v$version^{commit}" 2>/dev/null || git ls-remote origin "refs/tags/v$version^{}" | cut -f1)
   run_id=""
   for _ in $(seq 1 30); do
-    run_id=$(gh run list --workflow "$WORKFLOW" --branch "v$version" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+    run_id=$(gh run list --workflow "$WORKFLOW" --branch "v$version" --commit "$tag_sha" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
     [ -n "$run_id" ] && break
     sleep 5
   done
