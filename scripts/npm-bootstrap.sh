@@ -243,12 +243,14 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 say "Done"
+# `npm view --json` omits the publisher and attestations, so read the registry document itself.
 # shellcheck disable=SC2016 # ${...} below is a JavaScript template literal
-npm view "$name@$version" --json 2>/dev/null | node -e '
+curl -fsS "https://registry.npmjs.org/${name/\//%2F}" | VERSION="$version" node -e '
   let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
-    const v = JSON.parse(s);
-    console.log(`    ${v.name}@${v.version}`);
-    console.log(`    publisher:  ${v._npmUser?.trustedPublisher ? `trusted publisher (${v._npmUser.trustedPublisher.id})` : JSON.stringify(v._npmUser)}`);
+    const pkg = JSON.parse(s), v = pkg.versions?.[process.env.VERSION] ?? {};
+    const trusted = v._npmUser?.trustedPublisher;
+    console.log(`    ${pkg.name}@${process.env.VERSION} (versions on npm: ${Object.keys(pkg.versions ?? {}).join(", ")})`);
+    console.log(`    publisher:  ${trusted ? `trusted publisher (${trusted.id})` : `NOT a trusted publisher: ${JSON.stringify(v._npmUser)}`}`);
     console.log(`    provenance: ${v.dist?.attestations?.provenance?.predicateType ?? "missing"}`);
   });'
 note "From now on a release is: npm version patch && git push --follow-tags"
