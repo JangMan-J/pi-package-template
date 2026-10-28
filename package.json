@@ -16,9 +16,6 @@
   "keywords": [
     "pi-package"
   ],
-  "engines": {
-    "node": ">=22.19.0"
-  },
   "files": [
     "src",
     "README.md"
@@ -38,18 +35,8 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": ">=1.4.0",
+    "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
-  },
-  "devDependencies": {
-    "@earendil-works/pi-ai": "1.4.0",
-    "@earendil-works/pi-coding-agent": "1.4.0",
-    "@types/node": "~22.19.0",
-    "typebox": "1.3.27",
-    "typescript": "6.0.3"
-  },
-  "overrides": {
-    "undici": "8.12.3"
   },
   "publishConfig": {
     "access": "public"

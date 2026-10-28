@@ -15,9 +15,13 @@ and loads it in Pi.
    npm run check
    ```
 
-   `init-package` sets the npm name (default: the repository name), `repository`,
-   `homepage`, `bugs`, the lockfile name, and this title. npm provenance fails when
-   `repository` does not match the repository that publishes.
+   The template carries no versions. `init-package` sets the npm name (default: the
+   repository name), `repository`, `homepage`, `bugs`, and this title, then installs the
+   current Pi and TypeScript. It installs `pi-ai` and `typebox` at the versions that Pi
+   itself uses, and derives the floors from what it installed: the `pi-coding-agent` peer
+   range and `engines.node`. npm provenance fails when `repository` does not match the
+   repository that publishes. Commit the `package-lock.json` it creates; CI installs from
+   it.
 3. Write the extension in `src/`, update this README, and set the version you want to
    release first in `package.json`. Commit, push, and wait for CI to go green.
 4. Run the one-time npm setup in an interactive terminal:
@@ -49,9 +53,12 @@ tokens*. CI still publishes through the trusted publisher.
 
 ## Development
 
-Requires Node.js 22.19 or later. Pi and `typebox` are peer dependencies with exact dev
-pins, so the tests run against one known Pi. CI also tests the lowest Pi the
-`@earendil-works/pi-coding-agent` peer range allows.
+The Pi core packages and `typebox` are peer dependencies, because Pi provides them at
+runtime. Their exact dev pins make the tests run against what that Pi provides. CI reads
+its floors from `package.json`: it tests the `engines.node` floor, the current LTS, and
+the newest Node, plus the lowest Pi the peer range allows. Dependabot keeps the pins
+current; `npm run init-package -- --refresh` moves them, and the floors, to today's
+versions in one step. CI skips the template repository itself, which has no toolchain.
 
 ```sh
 npm run check        # type checker and tests
